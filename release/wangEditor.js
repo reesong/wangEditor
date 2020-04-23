@@ -2581,8 +2581,14 @@ Video.prototype = {
     },
 
     _createPanel: function _createPanel() {
-        var _this = this;
+        var editor = this.editor;
+        var uploadImg = editor.uploadImg;
 
+        var _this = this;
+        
+        // 上传视频id
+        var upTriggerVideoId = getRandom('up-trigger-video');
+        var upFileVideoId = getRandom('up-file-video');
         // 创建 id
         var textValId = getRandom('text-val');
         var btnId = getRandom('btn');
@@ -2591,7 +2597,48 @@ Video.prototype = {
         var panel = new Panel(this, {
             width: 350,
             // 一个 panel 多个 tab
-            tabs: [{
+            tabs: [
+                {
+                    title: '上传视频',
+                    tpl: '<div class="w-e-up-img-container"><div id="' + upTriggerVideoId + '" class="w-e-up-btn"><i class="w-e-icon-upload2"></i></div><div style="display:none;"><input id="' + upFileVideoId + '" type="file" multiple="multiple" accept="application/pdf,video/*"/></div></div>',
+                    events: [{
+                        // 触发选择图片
+                        selector: '#' + upTriggerVideoId,
+                        type: 'click',
+                        fn: function fn() {
+                            var $file = $('#' + upFileVideoId);
+                            var fileElem = $file[0];
+                            if (fileElem) {
+                                fileElem.click();
+                            } else {
+                                // 返回 true 可关闭 panel
+                                return true;
+                            }
+                        }
+                    }, {
+                        // 选择视频完毕
+                        selector: '#' + upFileVideoId,
+                        type: 'change',
+                        fn: function fn() {
+                            var $file = $('#' + upFileVideoId);
+                            var fileElem = $file[0];
+                            if (!fileElem) {
+                                // 返回 true 可关闭 panel
+                                return true;
+                            }
+                            // 获取选中的 file 对象列表
+                            var fileList = fileElem.files;
+                            if (fileList.length) {
+                                console.log(fileList);
+                                uploadImg.uploadVideo(fileList);
+                            }
+        
+                            // 返回 true 可关闭 panel
+                            return true;
+                        }
+                    }]
+                }/*, // first tab end THX
+                {
                 // 标题
                 title: '插入视频',
                 // 模板
@@ -2616,7 +2663,7 @@ Video.prototype = {
                         return true;
                     }
                 }]
-            } // first tab end
+            }*/ // first tab end
             ] // tabs end
         }); // panel end
 
@@ -4081,6 +4128,30 @@ UploadImg.prototype = {
         img.src = link;
     },
 
+    // 根据链接插入视频
+    insertLinkVideo: function insertLinkVideo(link) {
+    if (!link) return;
+    
+    var _this2 = this;
+
+    var editor = this.editor;
+    var config = editor.config;
+
+    // 校验格式
+    var linkVideoCheck = config.linkVideoCheck;
+    var checkResult = void 0;
+    if (linkVideoCheck && typeof linkVideoCheck === 'function') {
+        checkResult = linkVideoCheck(link);
+        if (typeof checkResult === 'string') {
+            // 校验失败，提示信息
+            alert(checkResult);
+            return;
+        }
+    }
+
+    editor.cmd.do('insertHTML', '<iframe src="' + link + '" style="width:650px;height: 366px" frameborder="0"></iframe>');
+    },
+
     // 上传图片
     uploadImg: function uploadImg(files) {
         var _this3 = this;
@@ -4318,6 +4389,228 @@ UploadImg.prototype = {
                 };
             });
         }
+    },
+    // THX上传视频
+    uploadVideo: function uploadVideo(files) {
+    var _this3 = this;
+
+    if (!files || !files.length) {
+        return;
+    }
+
+    // ------------------------------ 获取配置信息 ------------------------------
+    var editor = this.editor;
+    var config = editor.config;
+    var uploadVideoServer = config.uploadVideoServer;
+
+    var maxSize = config.uploadVideoMaxSize;
+    var maxSizeM = maxSize / 1024 / 1024;
+    var maxLength = config.uploadVideoMaxLength || 10000;
+    var uploadFileName = config.uploadFileName || '';
+    var uploadVideoParams = config.uploadVideoParams || {};
+    var uploadVideoParamsWithUrl = config.uploadVideoParamsWithUrl;
+    var uploadVideoHeaders = config.uploadVideoHeaders || {};
+    var hooks = config.uploadVideoHooks || {};
+    var timeout = config.uploadVideoTimeout || 30 * 60 * 1000; // 30分钟
+    var withCredentials = config.withCredentials;
+    if (withCredentials == null) {
+        withCredentials = false;
+    }
+    var customUploadVideo = config.customUploadVideo;
+
+    if (!customUploadVideo) {
+        // 没有 customUploadVideo 的情况下，需要如下两个配置才能继续进行图片上传
+        if (!uploadVideoServer) {
+            return;
+        }
+    }
+
+    // ------------------------------ 验证文件信息 ------------------------------
+    var resultFiles = [];
+    var errInfo = [];
+    arrForEach(files, function (file) {
+        var name = file.name;
+        var size = file.size;
+
+        // chrome 低版本 name === undefined
+        if (!name || !size) {
+            return;
+        }
+
+        if (/\.(pdf|rm|rmvb|3gp|avi|mpeg|mpg|mkv|dat|asf|wmv|flv|mov|mp4|ogg|ogm)$/i.test(name) === false) {
+            // 后缀名不合法，不是视频
+            errInfo.push('\u3010' + name + '\u3011\u4E0D\u662F\u56FE\u7247');
+            return;
+        }
+        if (maxSize < size) {
+            // 上传视频过大
+            errInfo.push('\u3010' + name + '\u3011\u5927\u4E8E ' + maxSizeM + 'M');
+            return;
+        }
+
+        // 验证通过的加入结果列表
+        resultFiles.push(file);
+    });
+    // 抛出验证信息
+    if (errInfo.length) {
+        this._alert('视频验证未通过: \n' + errInfo.join('\n'));
+        return;
+    }
+    if (resultFiles.length > maxLength) {
+        this._alert('一次最多上传' + maxLength + '个视频');
+        return;
+    }
+
+    // ------------------------------ 自定义上传 ------------------------------
+    if (customUploadVideo && typeof customUploadVideo === 'function') {
+        customUploadVideo(resultFiles, this.insertLinkVideo.bind(this));
+
+        // 阻止以下代码执行
+        return;
+    }
+
+    // 添加图片数据
+    var formdata = new FormData();
+    arrForEach(resultFiles, function (file) {
+        var name = uploadFileName || file.name;
+        formdata.append(name, file);
+    });
+
+    // ------------------------------ 上传图片 ------------------------------
+    if (uploadVideoServer && typeof uploadVideoServer === 'string') {
+        // 添加参数
+        var uploadVideoServerArr = uploadVideoServer.split('#');
+        uploadVideoServer = uploadVideoServerArr[0];
+        var uploadVideoServerHash = uploadVideoServerArr[1] || '';
+        objForEach(uploadVideoParams, function (key, val) {
+            // 因使用者反应，自定义参数不能默认 encode ，由 v3.1.1 版本开始注释掉
+            // val = encodeURIComponent(val)
+
+            // 第一，将参数拼接到 url 中
+            if (uploadVideoParamsWithUrl) {
+                if (uploadVideoServer.indexOf('?') > 0) {
+                    uploadVideoServer += '&';
+                } else {
+                    uploadVideoServer += '?';
+                }
+                uploadVideoServer = uploadVideoServer + key + '=' + val;
+            }
+
+            // 第二，将参数添加到 formdata 中
+            formdata.append(key, val);
+        });
+        if (uploadVideoServerHash) {
+            uploadVideoServer += '#' + uploadVideoServerHash;
+        }
+
+        // 定义 xhr
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', uploadVideoServer);
+
+        // 设置超时
+        xhr.timeout = timeout;
+        xhr.ontimeout = function () {
+            // hook - timeout
+            if (hooks.timeout && typeof hooks.timeout === 'function') {
+                hooks.timeout(xhr, editor);
+            }
+
+            _this3._alert('上传视频超时');
+        };
+
+        // 监控 progress
+        if (xhr.upload) {
+            xhr.upload.onprogress = function (e) {
+                var percent = void 0;
+                // 进度条
+                var progressBar = new Progress(editor);
+                if (e.lengthComputable) {
+                    percent = e.loaded / e.total;
+                    progressBar.show(percent);
+                }
+            };
+        }
+
+        // 返回数据
+        xhr.onreadystatechange = function () {
+            var result = void 0;
+            if (xhr.readyState === 4) {
+                if (xhr.status < 200 || xhr.status >= 300) {
+                    // hook - error
+                    if (hooks.error && typeof hooks.error === 'function') {
+                        hooks.error(xhr, editor);
+                    }
+
+                    // xhr 返回状态错误
+                    _this3._alert('上传视频发生错误', '\u4E0A\u4F20\u56FE\u7247\u53D1\u751F\u9519\u8BEF\uFF0C\u670D\u52A1\u5668\u8FD4\u56DE\u72B6\u6001\u662F ' + xhr.status);
+                    return;
+                }
+
+                result = xhr.responseText;
+                if ((typeof result === 'undefined' ? 'undefined' : _typeof(result)) !== 'object') {
+                    try {
+                        result = JSON.parse(result);
+                    } catch (ex) {
+                        // hook - fail
+                        if (hooks.fail && typeof hooks.fail === 'function') {
+                            hooks.fail(xhr, editor, result);
+                        }
+
+                        _this3._alert('上传视频失败', '上传视频返回结果错误，返回结果是: ' + result);
+                        return;
+                    }
+                }
+                if (!hooks.customInsert && result.errno != '0') {
+                    // hook - fail
+                    if (hooks.fail && typeof hooks.fail === 'function') {
+                        hooks.fail(xhr, editor, result);
+                    }
+
+                    // 数据错误
+                    _this3._alert('上传视频失败', '上传视频返回结果错误，返回结果 errno=' + result.errno);
+                } else {
+                    if (hooks.customInsert && typeof hooks.customInsert === 'function') {
+                        // 使用者自定义插入方法
+                        hooks.customInsert(_this3.insertLinkVideo.bind(_this3), result, editor);
+                    } else {
+                        // 将图片插入编辑器
+                        var data = result.data || [];
+                        data.forEach(function (link) {
+                            _this3.insertLinkVideo(link);
+                        });
+                    }
+
+                    // hook - success
+                    if (hooks.success && typeof hooks.success === 'function') {
+                        hooks.success(xhr, editor, result);
+                    }
+                }
+            }
+        };
+
+        // hook - before
+        if (hooks.before && typeof hooks.before === 'function') {
+            var beforeResult = hooks.before(xhr, editor, resultFiles);
+            if (beforeResult && (typeof beforeResult === 'undefined' ? 'undefined' : _typeof(beforeResult)) === 'object') {
+                if (beforeResult.prevent) {
+                    // 如果返回的结果是 {prevent: true, msg: 'xxxx'} 则表示用户放弃上传
+                    this._alert(beforeResult.msg);
+                    return;
+                }
+            }
+        }
+
+        // 自定义 headers
+        objForEach(uploadVideoHeaders, function (key, val) {
+            xhr.setRequestHeader(key, val);
+        });
+
+        // 跨域传 cookie
+        xhr.withCredentials = withCredentials;
+
+        // 发送请求
+        xhr.send(formdata);
+    }
     }
 };
 
